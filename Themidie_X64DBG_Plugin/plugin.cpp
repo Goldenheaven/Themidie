@@ -39,7 +39,7 @@ PLUG_EXPORT bool
 plugstop() { return 1; }
 
 
-PLUG_EXPORT BOOL APIENTRY 
+BOOL APIENTRY
 DllMain(HINSTANCE__ *module, unsigned long reason, void *reserved)
 {
     instance = module;

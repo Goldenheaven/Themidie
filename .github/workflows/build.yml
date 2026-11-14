@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - "**"
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
     inputs:
@@ -49,10 +51,33 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            msvc_arch: x64
+            cmake_arch: x64
+            plugin_directory: Themidie_X64DBG_Plugin
+            plugin_resource: Themidie_X64DBG_PLUGIN
+            plugin_library: x64dbg
+            plugin_output: Themidie.dp64
+          - architecture: x32
+            msvc_arch: x86
+            cmake_arch: Win32
+            plugin_directory: Themidie_X32DBG_PLUGIN
+            plugin_resource: Themidie_X32DBG_PLUGIN
+            plugin_library: x32dbg
+            plugin_output: Themidie.dp32
     env:
       BUILD_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
       X64DBG_REF: ${{ inputs.x64dbg_ref || 'master' }}
       MINHOOK_REF: ${{ inputs.minhook_ref || 'master' }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+      PLUGIN_DIRECTORY: ${{ matrix.plugin_directory }}
+      PLUGIN_RESOURCE: ${{ matrix.plugin_resource }}
+      PLUGIN_LIBRARY: ${{ matrix.plugin_library }}
+      PLUGIN_OUTPUT: ${{ matrix.plugin_output }}
     steps:
       - name: Check out Themidie
         uses: actions/checkout@v4
@@ -60,7 +85,7 @@ jobs:
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Fetch build dependencies
         shell: pwsh
@@ -71,8 +96,8 @@ jobs:
       - name: Build MinHook
         shell: pwsh
         run: |
-          cmake -S "$env:RUNNER_TEMP\minhook" -B "$env:RUNNER_TEMP\minhook-build" -A x64 -DCMAKE_BUILD_TYPE="$env:BUILD_CONFIGURATION"
-          cmake --build "$env:RUNNER_TEMP\minhook-build" --config "$env:BUILD_CONFIGURATION"
+          cmake -S "$env:RUNNER_TEMP\minhook" -B "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -A "${{ matrix.cmake_arch }}" -DCMAKE_BUILD_TYPE="$env:BUILD_CONFIGURATION"
+          cmake --build "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" --config "$env:BUILD_CONFIGURATION"
 
       - name: Build DLLs
         shell: pwsh
@@ -82,17 +107,17 @@ jobs:
           $pluginTemplateRoot = Join-Path $env:RUNNER_TEMP "x64dbg\PluginTemplate"
           $sdk = Join-Path $pluginTemplateRoot "pluginsdk"
           $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
-          $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
+          $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
           if (-not $minhookLib) {
             throw "MinHook library was not produced."
           }
 
           New-Item -ItemType Directory -Force $output | Out-Null
-          Push-Location "$env:GITHUB_WORKSPACE\Themidie_X64DBG_Plugin"
-          rc /nologo /fo "$output\Themidie_X64DBG_PLUGIN.res" Themidie_X64DBG_PLUGIN.rc
+          Push-Location "$env:GITHUB_WORKSPACE\$env:PLUGIN_DIRECTORY"
+          rc /nologo /fo "$output\$env:PLUGIN_RESOURCE.res" "$env:PLUGIN_RESOURCE.rc"
           cl /nologo /LD /EHsc /std:c++14 /I "$pluginTemplateRoot" /I . `
-            /Fe:"$output\Themidie.dp64" plugin.cpp themidie.cpp `
-            "$output\Themidie_X64DBG_PLUGIN.res" "$sdk\x64dbg.lib" `
+            /Fe:"$output\$env:PLUGIN_OUTPUT" plugin.cpp themidie.cpp `
+            "$output\$env:PLUGIN_RESOURCE.res" "$sdk\$env:PLUGIN_LIBRARY.lib" `
             user32.lib shell32.lib comdlg32.lib
           Pop-Location
 
@@ -105,6 +130,42 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: themidie-${{ env.BUILD_CONFIGURATION }}
+          name: themidie-${{ matrix.architecture }}-${{ env.BUILD_CONFIGURATION }}
           path: dist/
           if-no-files-found: error
+
+      - name: Package release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive `
+            -Path "dist\Themidie.dll", "dist\$env:PLUGIN_OUTPUT" `
+            -DestinationPath "dist\Themidie-${{ github.ref_name }}-${{ matrix.architecture }}.zip"
+
+      - name: Upload release package
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: themidie-${{ github.ref_name }}-${{ matrix.architecture }}
+          path: dist/Themidie-${{ github.ref_name }}-${{ matrix.architecture }}.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release package
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/**/*.zip
+          generate_release_notes: true
