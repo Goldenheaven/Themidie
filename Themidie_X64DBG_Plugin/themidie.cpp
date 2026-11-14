@@ -1,7 +1,82 @@
 #define WIN32_MEAN_AND_LEAN
 #include <Windows.h>
+#include <shellapi.h>
 #include <string>
 #include "themidie.hpp"
+
+static INT_PTR CALLBACK arguments_dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    std::string* arguments = (std::string*)GetWindowLongPtrA(window, DWLP_USER);
+
+    if (message == WM_INITDIALOG)
+    {
+        SetWindowLongPtrA(window, DWLP_USER, lparam);
+        SetFocus(GetDlgItem(window, IDC_ARGUMENTS));
+        return 0;
+    }
+
+    if (message == WM_COMMAND && LOWORD(wparam) == IDOK)
+    {
+        char buffer[32768] = "";
+        GetDlgItemTextA(window, IDC_ARGUMENTS, buffer, sizeof(buffer));
+        *arguments = buffer;
+        EndDialog(window, IDOK);
+        return 1;
+    }
+
+    if (message == WM_COMMAND && LOWORD(wparam) == IDCANCEL)
+    {
+        EndDialog(window, IDCANCEL);
+        return 1;
+    }
+
+    return 0;
+}
+
+static bool prompt_for_arguments(std::string& arguments)
+{
+    bool accepted = DialogBoxParamA(instance, MAKEINTRESOURCEA(IDD_ARGUMENTS), hwnd_dlg,
+        arguments_dialog_proc, (LPARAM)&arguments) == IDOK;
+    if (accepted && arguments.find_first_not_of(" \t\r\n") == std::string::npos)
+        arguments.clear();
+    return accepted;
+}
+
+static std::string command_line_arguments()
+{
+    int count = 0;
+    LPWSTR* values = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!values || count < 2)
+    {
+        if (values)
+            LocalFree(values);
+        return "";
+    }
+
+    std::string arguments;
+    for (int index = 1; index < count; ++index)
+    {
+        int size = WideCharToMultiByte(CP_ACP, 0, values[index], -1, 0, 0, 0, 0);
+        std::string value(size > 0 ? size - 1 : 0, '\0');
+        if (size > 1)
+            WideCharToMultiByte(CP_ACP, 0, values[index], size - 1, &value[0], size - 1, 0, 0);
+
+        if (!arguments.empty())
+            arguments += " ";
+        if (value.find_first_of(" \t\"") != std::string::npos)
+            arguments += "\"" + value + "\"";
+        else
+            arguments += value;
+    }
+
+    LocalFree(values);
+    return arguments;
+}
+
+static std::string quote_command_line_argument(const std::string& value)
+{
+    return "\"" + value + "\"";
+}
 
 
 std::string 
@@ -43,7 +118,17 @@ start(std::string exe_path)
     void *load_library_function = 0, *themidie_dll_address = 0;
     void *remote_thread = 0;
 
-    next = CreateProcessA(exe_path.c_str(), 0, 0, 0, 0, 4, 0, 0, &si, &pi);
+    std::string arguments = command_line_arguments();
+    if (arguments.find_first_not_of(" \t\r\n") == std::string::npos)
+        arguments.clear();
+    if (arguments.empty() && !prompt_for_arguments(arguments))
+        return;
+
+    std::string command_line = quote_command_line_argument(exe_path);
+    if (!arguments.empty())
+        command_line += " " + arguments;
+
+    next = CreateProcessA(exe_path.c_str(), &command_line[0], 0, 0, 0, 4, 0, 0, &si, &pi);
     if (!next) { error("Could not create target process, please retry with admin rights."); }
 
     else
