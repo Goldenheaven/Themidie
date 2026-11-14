@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build configuration
+        required: false
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+      x64dbg_ref:
+        description: x64dbg PluginTemplate ref
+        required: false
+        default: master
+        type: string
+      minhook_ref:
+        description: MinHook ref
+        required: false
+        default: master
+        type: string
+  workflow_call:
+    inputs:
+      configuration:
+        description: Build configuration
+        required: false
+        default: Release
+        type: string
+      x64dbg_ref:
+        description: x64dbg PluginTemplate ref
+        required: false
+        default: master
+        type: string
+      minhook_ref:
+        description: MinHook ref
+        required: false
+        default: master
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      BUILD_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
+      X64DBG_REF: ${{ inputs.x64dbg_ref || 'master' }}
+      MINHOOK_REF: ${{ inputs.minhook_ref || 'master' }}
+    steps:
+      - name: Check out Themidie
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Fetch build dependencies
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch "$env:X64DBG_REF" https://github.com/x64dbg/PluginTemplate.git "$env:RUNNER_TEMP\x64dbg"
+          git clone --depth 1 --branch "$env:MINHOOK_REF" https://github.com/TsudaKageyu/minhook.git "$env:RUNNER_TEMP\minhook"
+
+      - name: Build MinHook
+        shell: pwsh
+        run: |
+          cmake -S "$env:RUNNER_TEMP\minhook" -B "$env:RUNNER_TEMP\minhook-build" -A x64 -DCMAKE_BUILD_TYPE="$env:BUILD_CONFIGURATION"
+          cmake --build "$env:RUNNER_TEMP\minhook-build" --config "$env:BUILD_CONFIGURATION"
+
+      - name: Build DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = Join-Path $env:GITHUB_WORKSPACE "dist"
+          $sdk = Join-Path $env:RUNNER_TEMP "x64dbg\PluginTemplate\pluginsdk"
+          $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
+          $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
+          if (-not $minhookLib) {
+            throw "MinHook library was not produced."
+          }
+
+          New-Item -ItemType Directory -Force $output | Out-Null
+          Push-Location "$env:GITHUB_WORKSPACE\Themidie_X64DBG_Plugin"
+          rc /nologo /fo "$output\Themidie_X64DBG_PLUGIN.res" Themidie_X64DBG_PLUGIN.rc
+          cl /nologo /LD /EHsc /std:c++14 /I "$sdk" /I . `
+            /Fe:"$output\Themidie.dp64" plugin.cpp themidie.cpp `
+            "$output\Themidie_X64DBG_PLUGIN.res" "$sdk\x64dbg.lib" `
+            user32.lib shell32.lib comdlg32.lib
+          Pop-Location
+
+          Push-Location "$env:GITHUB_WORKSPACE\Themidie_DLL"
+          cl /nologo /LD /EHsc /std:c++14 /I "$minhookInclude" `
+            /Fe:"$output\Themidie.dll" main.cpp "$minhookLib.FullName" `
+            user32.lib advapi32.lib ntdll.lib
+          Pop-Location
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: themidie-${{ env.BUILD_CONFIGURATION }}
+          path: dist/
+          if-no-files-found: error

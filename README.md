@@ -30,6 +30,23 @@ x64dbg plugin to bypass Themida 3.x Anti-Debugger / VM / Monitoring programs che
 
 ![](Images/themidie_messagebox.png)
 
+### Build
+
+The project is built by the [Build workflow](../../actions/workflows/build.yml) on
+Windows. It produces `Themidie.dll` and `Themidie.dp64` as a downloadable
+artifact. The workflow can be run manually with `configuration`, `x64dbg_ref`,
+and `minhook_ref` arguments, or called from another workflow:
+
+```yaml
+jobs:
+  build:
+    uses: Goldenheaven/Themidie/.github/workflows/build.yml@master
+    with:
+      configuration: Release
+      x64dbg_ref: master
+      minhook_ref: master
+```
+
 
 ### Hooks
 
