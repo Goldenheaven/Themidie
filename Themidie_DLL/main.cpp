@@ -1,6 +1,13 @@
 #include "MinHook.h"
 #include "hooks.hpp"
 
+#define WIN32_NO_STATUS
+#include <Windows.h>
+#undef WIN32_NO_STATUS
+
+#include <winternl.h>
+#include <ntstatus.h>
+
 #define error(message) MessageBoxA(0, message, "Themidie", 16L);
 
 BOOL APIENTRY DllMain(HINSTANCE__ *module, unsigned long call_reason, void *reserved)
