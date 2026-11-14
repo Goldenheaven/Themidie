@@ -90,7 +90,7 @@ jobs:
       - name: Fetch build dependencies
         shell: pwsh
         run: |
-          git clone --depth 1 --branch "$env:X64DBG_REF" https://github.com/x64dbg/PluginTemplate.git "$env:RUNNER_TEMP\x64dbg"
+          git clone --depth 1 --branch "$env:X64DBG_REF" https://github.com/x64dbg/x64dbg.git "$env:RUNNER_TEMP\x64dbg"
           git clone --depth 1 --branch "$env:MINHOOK_REF" https://github.com/TsudaKageyu/minhook.git "$env:RUNNER_TEMP\minhook"
 
       - name: Build MinHook
@@ -98,13 +98,19 @@ jobs:
         run: |
           cmake -S "$env:RUNNER_TEMP\minhook" -B "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -A "${{ matrix.cmake_arch }}" -DCMAKE_BUILD_TYPE="$env:BUILD_CONFIGURATION"
           cmake --build "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" --config "$env:BUILD_CONFIGURATION"
+          
+      - name: Build X64DBG
+        run: |
+          $env:RUNNER_TEMP\x64dbg\build.bat x64
+          $env:RUNNER_TEMP\x64dbg\build.bat x32
+          $env:RUNNER_TEMP\x64dbg\release.bat
 
       - name: Build DLLs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $output = Join-Path $env:GITHUB_WORKSPACE "dist"
-          $pluginTemplateRoot = Join-Path $env:RUNNER_TEMP "x64dbg\PluginTemplate"
+          $pluginTemplateRoot = Join-Path $env:RUNNER_TEMP "release"
           $sdk = Join-Path $pluginTemplateRoot "pluginsdk"
           $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
           $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
