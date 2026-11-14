@@ -4,6 +4,8 @@
 //
 #define IDB_PNG1                        101
 #define IDI_ICON1                       102
+#define IDD_ARGUMENTS                   103
+#define IDC_ARGUMENTS                   1001
 
 // Next default values for new objects
 // 
