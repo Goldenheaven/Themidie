@@ -18,7 +18,7 @@ on:
           - Release
           - Debug
       x64dbg_ref:
-        description: x64dbg PluginTemplate ref
+        description: x64dbg ref
         required: false
         default: master
         type: string
@@ -35,7 +35,7 @@ on:
         default: Release
         type: string
       x64dbg_ref:
-        description: x64dbg PluginTemplate ref
+        description: x64dbg ref
         required: false
         default: master
         type: string
@@ -101,16 +101,16 @@ jobs:
           
       - name: Build X64DBG
         run: |
-          $env:RUNNER_TEMP\x64dbg\build.bat x64
-          $env:RUNNER_TEMP\x64dbg\build.bat x32
-          $env:RUNNER_TEMP\x64dbg\release.bat
+          "$env:X64DBG_REF\build.bat" x64
+          "$env:X64DBG_REF\build.bat" x32
+          "$env:X64DBG_REF\release.bat"
 
       - name: Build DLLs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $output = Join-Path $env:GITHUB_WORKSPACE "dist"
-          $pluginTemplateRoot = Join-Path $env:RUNNER_TEMP "release"
+          $pluginTemplateRoot = Join-Path $env:X64DBG_REF "release"
           $sdk = Join-Path $pluginTemplateRoot "pluginsdk"
           $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
           $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
