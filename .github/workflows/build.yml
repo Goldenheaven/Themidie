@@ -135,6 +135,25 @@ jobs:
               -DX64DBG_BUILD_IN_TREE=ON
             cmake --build "$build" --config Release --parallel
           }
+
+          # Visual Studio places the launcher in bin/Release; upstream packaging
+          # expects bin/x96dbg.exe. Also support refs that already use bin directly.
+          $bin = Join-Path $source 'bin'
+          $launcher = Join-Path $bin 'x96dbg.exe'
+          $launcherFromRelease = Join-Path $bin 'Release\x96dbg.exe'
+          if (Test-Path -LiteralPath $launcherFromRelease -PathType Leaf) {
+            Copy-Item -LiteralPath $launcherFromRelease -Destination $launcher -Force
+          } elseif (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+            throw "x64dbg launcher was not produced at '$launcherFromRelease' or '$launcher'."
+          }
+
+          # Include launcher symbols in upstream's bin/*.pdb collection, if present.
+          $launcherPdb = Join-Path $bin 'Release\x96dbg.pdb'
+          if (Test-Path -LiteralPath $launcherPdb -PathType Leaf) {
+            Copy-Item -LiteralPath $launcherPdb `
+              -Destination (Join-Path $bin 'x96dbg.pdb') -Force
+          }
+
           cmake -P "$source\cmake\release.cmake"
 
       - name: Package and version x64dbg
