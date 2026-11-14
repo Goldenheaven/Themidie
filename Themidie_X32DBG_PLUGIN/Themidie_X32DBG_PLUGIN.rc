@@ -1,0 +1,20 @@
+// x32dbg plugin resources.
+#include "../Themidie_X64DBG_Plugin/resource.h"
+
+#include "winres.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+IDB_PNG1 PNG "../Themidie_X64DBG_Plugin/Themidie_X64DBG_PLUGIN.png"
+IDI_ICON1 ICON "../Themidie_X64DBG_Plugin/Themidie_X64DBG_PLUGIN.ico"
+
+IDD_ARGUMENTS DIALOGEX 0, 0, 220, 55
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Executable arguments"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    EDITTEXT        IDC_ARGUMENTS, 6, 6, 208, 14, ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "OK", IDOK, 104, 30, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 158, 30, 58, 14
+END

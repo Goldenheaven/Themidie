@@ -1,6 +1,6 @@
 # Themidie - /!\ For educational purposes only /!\
 
-x64dbg plugin to bypass Themida 3.x Anti-Debugger / VM / Monitoring programs checks (64bits only)
+x64dbg plugin to bypass Themida 3.x Anti-Debugger / VM / Monitoring programs checks
 
   - [x64dbg](https://github.com/x64dbg/x64dbg)
   - [DLL injection](https://en.wikipedia.org/wiki/DLL_injection) ([LoadLibrary](https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibrarya))
@@ -9,7 +9,7 @@ x64dbg plugin to bypass Themida 3.x Anti-Debugger / VM / Monitoring programs che
 
 ### Usage
 
-- Download the [latest version](https://github.com/VenTaz/Themidie/releases/latest) of Themidie and extract Themidie.dll and Themidie.dp64 to x64dbg's plugins folder 
+- Download the [latest version](https://github.com/VenTaz/Themidie/releases/latest) of Themidie and extract the matching `Themidie.dll` and `Themidie.dp64` or `Themidie.dp32` to the corresponding x64dbg or x32dbg plugins folder.
 - Download the [latest version](https://github.com/x64dbg/ScyllaHide/releases/latest) of ScyllaHide and extract HookLibraryx64.dll and ScyllaHideX64DBGPlugin.dp64 to x64dbg's plugins folder 
 
 ![](Images/plugins.png)
@@ -33,9 +33,14 @@ x64dbg plugin to bypass Themida 3.x Anti-Debugger / VM / Monitoring programs che
 ### Build
 
 The project is built by the [Build workflow](../../actions/workflows/build.yml) on
-Windows. It produces `Themidie.dll` and `Themidie.dp64` as a downloadable
-artifact. The workflow can be run manually with `configuration`, `x64dbg_ref`,
-and `minhook_ref` arguments, or called from another workflow:
+Windows. It produces architecture-specific `Themidie.dll` and x64dbg/x32dbg
+plugin files (`Themidie.dp64` and `Themidie.dp32`) as downloadable artifacts.
+MinHook is built for each architecture and statically linked into `Themidie.dll`,
+so no separate MinHook runtime DLL is required.
+Pushing a tag beginning with `v` also creates a GitHub Release with
+`Themidie-<tag>-x64.zip` and `Themidie-<tag>-x32.zip` packages. The workflow can
+be run manually with `configuration`, `x64dbg_ref`, and `minhook_ref` arguments,
+or called from another workflow:
 
 ```yaml
 jobs:

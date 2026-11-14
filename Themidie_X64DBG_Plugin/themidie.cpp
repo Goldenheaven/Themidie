@@ -95,14 +95,10 @@ convert_path(std::string& path)
 std::string 
 remove_exe_name_from_path(std::string& path)
 {
-    unsigned long long pos = std::string::npos;
-    std::string exe_name = "x64dbg.exe";
-
-    while ((pos = path.find(exe_name)) != std::string::npos)
-    {
-        path.erase(pos, exe_name.length());
-    }
-
+    std::string::size_type separator = path.find_last_of("\\/");
+    if (separator == std::string::npos)
+        return "";
+    path.erase(separator + 1);
     return path;
 }
 
@@ -133,42 +129,94 @@ start(std::string exe_path)
 
     else
     {
+        auto abort_target = [&]()
+        {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        };
+
         kernel_module = GetModuleHandleA("kernel32.dll");
-        if (!kernel_module) { error("Could not find kernel32.dll module into target process. Is it loaded?"); }
+        if (!kernel_module)
+        {
+            error("Could not find kernel32.dll module into target process. Is it loaded?");
+            abort_target();
+        }
 
         else
         {
             load_library_function = GetProcAddress(kernel_module, "LoadLibraryA");
-            if (!load_library_function) { error("Could not find LoadLibraryA function into target process."); }
+            if (!load_library_function)
+            {
+                error("Could not find LoadLibraryA function into target process.");
+                abort_target();
+            }
 
             else
             {
-                char buffer[260]; GetModuleFileNameA(0, buffer, 260);
+                char buffer[MAX_PATH] = "";
+                if (!GetModuleFileNameA(0, buffer, sizeof(buffer)))
+                {
+                    error("Could not determine the debugger installation path.");
+                    TerminateProcess(pi.hProcess, 1);
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                    return;
+                }
                 std::string themidie_dll_path = convert_path(remove_exe_name_from_path(std::string(buffer)) + "plugins\\Themidie.dll");
 
-                themidie_dll_address = VirtualAllocEx(pi.hProcess, 0, strlen(themidie_dll_path.c_str()), 8192 | 4096, 4);
-                if (!themidie_dll_address) { error("Could not allocate memory into target process."); }
+                SIZE_T path_size = themidie_dll_path.size() + 1;
+                themidie_dll_address = VirtualAllocEx(pi.hProcess, 0, path_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+                if (!themidie_dll_address)
+                {
+                    error("Could not allocate memory into target process.");
+                    abort_target();
+                }
 
                 else
                 {
-                    next = WriteProcessMemory(pi.hProcess, themidie_dll_address, themidie_dll_path.c_str(), strlen(themidie_dll_path.c_str()), 0);
-                    if (!next) { error("Could not write Themidie into target process."); }
+                    next = WriteProcessMemory(pi.hProcess, themidie_dll_address, themidie_dll_path.c_str(), path_size, 0);
+                    if (!next)
+                    {
+                        error("Could not write Themidie into target process.");
+                        VirtualFreeEx(pi.hProcess, themidie_dll_address, 0, MEM_RELEASE);
+                        abort_target();
+                    }
 
                     else
                     {
                         remote_thread = CreateRemoteThread(pi.hProcess, 0, 0, (PTHREAD_START_ROUTINE)load_library_function, themidie_dll_address, 0, 0);
-                        if (!remote_thread) { error("Could not load Themidie into target process."); }
+                        if (!remote_thread)
+                        {
+                            error("Could not load Themidie into target process.");
+                            VirtualFreeEx(pi.hProcess, themidie_dll_address, 0, MEM_RELEASE);
+                            abort_target();
+                        }
 
                         else
                         {
-                            next = ShowWindow(GetForegroundWindow(), 6);
-                            if (!next) { error("Could not minimize x64dbg window. Is the ShowWindow function hooked by another plugin?"); }
+                            DWORD wait_result = WaitForSingleObject(remote_thread, 5000);
+                            DWORD load_result = 0;
+                            bool loaded = wait_result == WAIT_OBJECT_0 &&
+                                GetExitCodeThread(remote_thread, &load_result) &&
+                                load_result != 0;
+                            VirtualFreeEx(pi.hProcess, themidie_dll_address, 0, MEM_RELEASE);
+                            CloseHandle(remote_thread);
 
-                            else
+                            if (!loaded)
                             {
+                                error("Could not load Themidie into target process.");
+                                TerminateProcess(pi.hProcess, 1);
                                 CloseHandle(pi.hProcess);
-                                ResumeThread(pi.hThread);
+                                CloseHandle(pi.hThread);
+                                return;
                             }
+
+                            ShowWindow(hwnd_dlg, SW_MINIMIZE);
+                            if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1))
+                                error("Could not resume the target process.");
+                            CloseHandle(pi.hProcess);
+                            CloseHandle(pi.hThread);
                         }
                     }
                 }

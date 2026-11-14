@@ -1,22 +1,22 @@
 #pragma once
 #include "ntdll.h"
 
-typedef HINSTANCE__ *(*GMHA)(const char*);
+typedef HINSTANCE__ *(WINAPI *GMHA)(const char*);
 GMHA og_gmha = 0;
 
-typedef HWND__ *(*FWA)(const char*, const char*);
+typedef HWND__ *(WINAPI *FWA)(const char*, const char*);
 FWA og_fwa = 0;
 
-typedef long (*ROKA)(HKEY__*, const char*, HKEY__**);
+typedef LONG (WINAPI *ROKA)(HKEY__*, const char*, HKEY__**);
 ROKA og_roka = 0;
 
-typedef long (*RQVEA)(HKEY__*, const char*, unsigned long*, unsigned long*, unsigned char*, unsigned long*);
+typedef LONG (WINAPI *RQVEA)(HKEY__*, const char*, unsigned long*, unsigned long*, unsigned char*, unsigned long*);
 RQVEA og_rqvea = 0;
 
-typedef long (*NSIT)(HANDLE, _THREADINFOCLASS, void*, unsigned long);
+typedef NTSTATUS (NTAPI *NSIT)(HANDLE, _THREADINFOCLASS, void*, unsigned long);
 NSIT og_nsit = 0;
 
-typedef long (*NQVM)(HANDLE, void*, _MEMORY_INFORMATION_CLASS, void*, unsigned long long, unsigned long long*);
+typedef NTSTATUS (NTAPI *NQVM)(HANDLE, void*, _MEMORY_INFORMATION_CLASS, void*, SIZE_T, PSIZE_T);
 NQVM og_nqvm = 0;
 
 const char *bad_modules[3] = {
@@ -61,16 +61,18 @@ get_process_id_by_thread_handle(void *thread)
 	return 0;
 }
 
-HINSTANCE__ *
+HINSTANCE__ *WINAPI
 gmha_hook(const char *module_name)
 {
+	if (!module_name) return og_gmha(module_name);
+
 	for (int i = 0; i < _countof(bad_modules); i++)
 		if (strstr(module_name, bad_modules[i])) return 0;
 
 	return og_gmha(module_name);
 }
 
-HWND__ * 
+HWND__ *WINAPI
 fwa_hook(const char *class_name, const char *window_name)
 {
 	if (class_name == 0 || window_name == 0) return og_fwa(class_name, window_name);
@@ -81,9 +83,10 @@ fwa_hook(const char *class_name, const char *window_name)
 	return og_fwa(class_name, window_name);
 }
 
-long
+LONG WINAPI
 roka_hook(HKEY__ *key, const char* sub_key, HKEY__ **result)
 {
+	if (!sub_key) return og_roka(key, sub_key, result);
 
 	for (int i = 0; i < _countof(good_keys); i++)
 		if (strstr(sub_key, good_keys[i])) return 0L;
@@ -93,16 +96,18 @@ roka_hook(HKEY__ *key, const char* sub_key, HKEY__ **result)
 	return og_roka(key, sub_key, result);
 }
 
-long
+LONG WINAPI
 rqvea_hook(HKEY__ *key, const char *value_name, unsigned long *reserved, unsigned long *type, unsigned char *lp_data, unsigned long *lpcb_data)
 {
+	if (!value_name) return og_rqvea(key, value_name, reserved, type, lp_data, lpcb_data);
+
 	for (int i = 0; i < _countof(good_values); i++)
 		if (strstr(value_name, good_values[i])) return 0L;
 
 	return og_rqvea(key, value_name, reserved, type, lp_data, lpcb_data);
 }
 
-long
+NTSTATUS NTAPI
 nsit_hook(HANDLE thread_handle, _THREADINFOCLASS thread_information_class, void *thread_information, unsigned long thread_information_length)
 {
 	if (thread_information_class == ThreadHideFromDebugger && thread_information_length == 0)
@@ -112,21 +117,22 @@ nsit_hook(HANDLE thread_handle, _THREADINFOCLASS thread_information_class, void 
 	return og_nsit(thread_handle, thread_information_class, thread_information, thread_information_length);
 }
 
-long
-nqvm_hook(HANDLE process_handle, void *base_address, _MEMORY_INFORMATION_CLASS memory_information_class, void *memory_information, unsigned long long memory_information_length, unsigned long long *return_length)
+NTSTATUS NTAPI
+nqvm_hook(HANDLE process_handle, void *base_address, _MEMORY_INFORMATION_CLASS memory_information_class, void *memory_information, SIZE_T memory_information_length, PSIZE_T return_length)
 {
 	static int is_loaded = 0;
 	static int nqvm_count = 0;
 
 	if (process_handle == NtCurrentProcess && !is_loaded)
 	{
-		if (memory_information_class == MemoryBasicInformation && nqvm_count == 0 || memory_information_class == MemoryRegionInformation && nqvm_count == 1)
+		if ((memory_information_class == MemoryBasicInformation && nqvm_count == 0) ||
+			(memory_information_class == MemoryRegionInformation && nqvm_count == 1))
 			nqvm_count++;
 		else if (memory_information_class == MemoryMappedFilenameInformation && nqvm_count == 2)
 		{
 			MH_DisableHook(&GetModuleHandleA);
 			is_loaded = 1;
-			MessageBoxA(0, "The executable is now loaded in the memory. You can attach x64dbg to the target process.", "Themidie", 64L);
+			MessageBoxA(0, "The executable is now loaded in the memory. You can attach a debugger to the target process.", "Themidie", 64L);
 		}
 	}
 
