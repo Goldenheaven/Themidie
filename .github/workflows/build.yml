@@ -43,6 +43,9 @@ on:
         default: master
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-2022
@@ -76,7 +79,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $output = Join-Path $env:GITHUB_WORKSPACE "dist"
-          $sdk = Join-Path $env:RUNNER_TEMP "x64dbg\PluginTemplate\pluginsdk"
+          $pluginTemplateRoot = Join-Path $env:RUNNER_TEMP "x64dbg\PluginTemplate"
+          $sdk = Join-Path $pluginTemplateRoot "pluginsdk"
           $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
           $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
           if (-not $minhookLib) {
@@ -86,7 +90,7 @@ jobs:
           New-Item -ItemType Directory -Force $output | Out-Null
           Push-Location "$env:GITHUB_WORKSPACE\Themidie_X64DBG_Plugin"
           rc /nologo /fo "$output\Themidie_X64DBG_PLUGIN.res" Themidie_X64DBG_PLUGIN.rc
-          cl /nologo /LD /EHsc /std:c++14 /I "$sdk" /I . `
+          cl /nologo /LD /EHsc /std:c++14 /I "$pluginTemplateRoot" /I . `
             /Fe:"$output\Themidie.dp64" plugin.cpp themidie.cpp `
             "$output\Themidie_X64DBG_PLUGIN.res" "$sdk\x64dbg.lib" `
             user32.lib shell32.lib comdlg32.lib
@@ -94,7 +98,7 @@ jobs:
 
           Push-Location "$env:GITHUB_WORKSPACE\Themidie_DLL"
           cl /nologo /LD /EHsc /std:c++14 /I "$minhookInclude" `
-            /Fe:"$output\Themidie.dll" main.cpp "$minhookLib.FullName" `
+            /Fe:"$output\Themidie.dll" main.cpp "$($minhookLib.FullName)" `
             user32.lib advapi32.lib ntdll.lib
           Pop-Location
 
