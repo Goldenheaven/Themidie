@@ -1,3 +1,18 @@
+# Save this file as .github/workflows/build.yml.
+# x64dbg_ref must identify a ref with the modern CMake project.
+#
+# Source fix for ntstatus.h macro warnings: before any header that includes
+# Windows.h, use the following order in Themidie_DLL's source/shared header:
+#   #define WIN32_NO_STATUS
+#   #include <Windows.h>
+#   #undef WIN32_NO_STATUS
+#   #include <winternl.h>
+#   #include <ntstatus.h>
+#
+# Any plugin #pragma comment(lib, ...) directives must select x64dbg.lib and
+# x64bridge.lib under _WIN64, or x32dbg.lib and x32bridge.lib otherwise.
+# The workflow also links those architecture-specific SDK libraries explicitly.
+
 name: Build
 
 on:
@@ -18,39 +33,243 @@ on:
           - Release
           - Debug
       x64dbg_ref:
-        description: x64dbg ref
+        description: x64dbg ref containing the CMake build
         required: false
-        default: master
+        default: development
         type: string
       minhook_ref:
         description: MinHook ref
         required: false
         default: master
         type: string
+      publish_x64dbg:
+        description: Publish a separate dated x64dbg snapshot release
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       configuration:
-        description: Build configuration
+        description: Build configuration (Release or Debug)
         required: false
         default: Release
         type: string
       x64dbg_ref:
-        description: x64dbg ref
+        description: x64dbg ref containing the CMake build
         required: false
-        default: master
+        default: development
         type: string
       minhook_ref:
         description: MinHook ref
         required: false
         default: master
         type: string
+      publish_x64dbg:
+        description: Publish a separate dated x64dbg snapshot release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  build_x64dbg:
+    name: Build x64dbg distribution and SDK
     runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    env:
+      X64DBG_REF: ${{ inputs.x64dbg_ref || 'development' }}
+      BUILD_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
+    steps:
+      - name: Check out x64dbg once for both architectures
+        uses: actions/checkout@v4
+        with:
+          repository: x64dbg/x64dbg
+          ref: ${{ env.X64DBG_REF }}
+          path: .deps/x64dbg
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record x64dbg build identity
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (@('Release', 'Debug') -cnotcontains $env:BUILD_CONFIGURATION) {
+            throw 'configuration must be Release or Debug.'
+          }
+          $source = Join-Path $env:GITHUB_WORKSPACE '.deps\x64dbg'
+          foreach ($required in @('CMakeLists.txt', 'cmake\release.cmake')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $source $required))) {
+              throw "x64dbg ref '$env:X64DBG_REF' must contain the modern CMake build and release script."
+            }
+          }
+          $sha = (git -C "$source" rev-parse HEAD).Trim()
+          $started = [DateTimeOffset]::UtcNow
+          $date = $started.ToString('yyyy.MM.dd')
+          $timestamp = $started.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $version = '{0}-r{1}-a{2}-g{3}' -f $date, $env:GITHUB_RUN_NUMBER, $env:GITHUB_RUN_ATTEMPT, $sha.Substring(0, 12)
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=x64dbg-$version" >> $env:GITHUB_OUTPUT
+          "started_at=$timestamp" >> $env:GITHUB_OUTPUT
+
+      - name: Build complete x64dbg distributions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $source = Join-Path $env:GITHUB_WORKSPACE '.deps\x64dbg'
+          # Both builds share one source checkout and therefore one upstream SHA.
+          # Build all targets: the upstream packager also needs the GUI and tools.
+          foreach ($architecture in @('Win32', 'x64')) {
+            $build = Join-Path $env:RUNNER_TEMP "x64dbg-build-$architecture"
+            cmake -S "$source" -B "$build" `
+              -G 'Visual Studio 17 2022' -A "$architecture" `
+              -DX64DBG_BUILD_IN_TREE=ON
+            cmake --build "$build" --config Release --parallel
+          }
+          cmake -P "$source\cmake\release.cmake"
+
+      - name: Package and version x64dbg
+        env:
+          X64DBG_SHA: ${{ steps.version.outputs.sha }}
+          X64DBG_VERSION: ${{ steps.version.outputs.version }}
+          X64DBG_TAG: ${{ steps.version.outputs.tag }}
+          X64DBG_STARTED_AT: ${{ steps.version.outputs.started_at }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $source = Join-Path $env:GITHUB_WORKSPACE '.deps\x64dbg'
+          $release = Join-Path $source 'release'
+          $output = Join-Path $env:RUNNER_TEMP 'x64dbg-release-artifacts'
+          $tag = $env:X64DBG_TAG
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $commitUrl = "https://github.com/x64dbg/x64dbg/commit/$env:X64DBG_SHA"
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+
+          $binaryVersions = foreach ($architecture in @('x32', 'x64')) {
+            $exe = Get-Item -LiteralPath "$release\release\$architecture\$($architecture)dbg.exe"
+            [ordered]@{
+              architecture = $architecture
+              file_version = $exe.VersionInfo.FileVersion
+              product_version = $exe.VersionInfo.ProductVersion
+            }
+          }
+          $metadata = [ordered]@{
+            schema_version = 1
+            project = 'x64dbg'
+            package_version = $env:X64DBG_VERSION
+            release_tag = $tag
+            upstream = [ordered]@{
+              repository = 'https://github.com/x64dbg/x64dbg'
+              requested_ref = $env:X64DBG_REF
+              commit = $env:X64DBG_SHA
+              commit_url = $commitUrl
+              submodule_revisions = @(git -C "$source" submodule status --recursive)
+            }
+            build = [ordered]@{
+              started_at_utc = $env:X64DBG_STARTED_AT
+              completed_at_utc = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+              configuration = 'Release'
+              architectures = @('x32', 'x64')
+              generator = 'Visual Studio 17 2022'
+              runner_image = $env:ImageOS
+              runner_image_version = $env:ImageVersion
+              executable_versions = @($binaryVersions)
+            }
+            provenance = [ordered]@{
+              repository = $env:GITHUB_REPOSITORY
+              workflow = $env:GITHUB_WORKFLOW
+              workflow_commit = $env:GITHUB_SHA
+              run_id = $env:GITHUB_RUN_ID
+              run_number = $env:GITHUB_RUN_NUMBER
+              run_attempt = $env:GITHUB_RUN_ATTEMPT
+              run_url = $runUrl
+            }
+          }
+          $metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$release\BUILD-INFO.json" -Encoding utf8
+          Copy-Item -LiteralPath "$source\LICENSE" -Destination "$release\LICENSE.txt"
+          Copy-Item -LiteralPath "$release\BUILD-INFO.json" -Destination "$output\$tag-build-info.json"
+
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) {
+            $sevenZip = (Get-Command '7z.exe' -ErrorAction Stop).Source
+          }
+          Push-Location $release
+          try {
+            # Preserve upstream's release/ and pluginsdk/ layout in the full package.
+            & $sevenZip a -tzip -mx=5 "$output\$tag-windows-x32-x64.zip" `
+              'release' 'pluginsdk' 'commithash.txt' 'BUILD-INFO.json' 'LICENSE.txt'
+            & $sevenZip a -tzip -mx=5 "$output\$tag-pluginsdk.zip" `
+              'pluginsdk' 'commithash.txt' 'BUILD-INFO.json' 'LICENSE.txt'
+            & $sevenZip a -tzip -mx=5 "$output\$tag-symbols-x32-x64.zip" `
+              'pdb' 'commithash.txt' 'BUILD-INFO.json' 'LICENSE.txt'
+          } finally {
+            Pop-Location
+          }
+
+          $checksums = Get-ChildItem -LiteralPath $output -File |
+            Where-Object { $_.Extension -in @('.zip', '.json') } |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              '{0}  {1}' -f $hash, $_.Name
+            }
+          $checksums | Set-Content -LiteralPath "$output\$tag-SHA256SUMS.txt" -Encoding ascii
+
+          @"
+          ## x64dbg snapshot $env:X64DBG_VERSION
+
+          Built from [x64dbg/x64dbg commit $env:X64DBG_SHA]($commitUrl).
+
+          - Requested upstream ref: $env:X64DBG_REF
+          - Build started (UTC): $env:X64DBG_STARTED_AT
+          - Configuration: Release
+          - Architectures: x32 (32-bit x86) and x64 (64-bit x86)
+          - Build workflow: $runUrl
+
+          ### Downloads
+
+          - **windows-x32-x64.zip**: complete debugger distribution and matching Plugin SDK. Extract it, then launch release/x96dbg.exe, release/x32/x32dbg.exe, or release/x64/x64dbg.exe.
+          - **pluginsdk.zip**: the matching SDK by itself, including both architectures' import libraries.
+          - **symbols-x32-x64.zip**: symbols collected by upstream's release script.
+          - **build-info.json**: source, build timestamps, executable versions, and workflow provenance.
+          - **SHA256SUMS.txt**: SHA-256 checksums for the ZIP archives and build manifest.
+
+          This snapshot is packaged by $env:GITHUB_REPOSITORY. Its release tag points to workflow commit $env:GITHUB_SHA in this repository. GitHub's automatic Source code downloads refer to that repository; [the upstream x64dbg source commit is here]($commitUrl).
+          "@ | Set-Content -LiteralPath "$output\release-notes.md" -Encoding utf8
+
+      - name: Upload matching SDK for Themidie builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.tag }}-sdk
+          path: .deps/x64dbg/release/pluginsdk/
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+      - name: Upload x64dbg release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.tag }}-release
+          path: ${{ runner.temp }}/x64dbg-release-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  build:
+    needs: build_x64dbg
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
     strategy:
       fail-fast: false
       matrix:
@@ -71,9 +290,9 @@ jobs:
             plugin_output: Themidie.dp32
     env:
       BUILD_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
-      X64DBG_REF: ${{ inputs.x64dbg_ref || 'master' }}
       MINHOOK_REF: ${{ inputs.minhook_ref || 'master' }}
       ARCHITECTURE: ${{ matrix.architecture }}
+      CMAKE_ARCH: ${{ matrix.cmake_arch }}
       PLUGIN_DIRECTORY: ${{ matrix.plugin_directory }}
       PLUGIN_RESOURCE: ${{ matrix.plugin_resource }}
       PLUGIN_LIBRARY: ${{ matrix.plugin_library }}
@@ -81,97 +300,207 @@ jobs:
     steps:
       - name: Check out Themidie
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (@('Release', 'Debug') -cnotcontains $env:BUILD_CONFIGURATION) {
+            throw 'configuration must be Release or Debug.'
+          }
+          $plugin = Join-Path $env:GITHUB_WORKSPACE $env:PLUGIN_DIRECTORY
+          $sources = @(
+            (Join-Path $plugin 'plugin.cpp'),
+            (Join-Path $plugin 'themidie.cpp'),
+            (Join-Path $plugin "$env:PLUGIN_RESOURCE.rc"),
+            (Join-Path $env:GITHUB_WORKSPACE 'Themidie_DLL\main.cpp')
+          )
+          foreach ($source in $sources) {
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Required source file is missing: $source"
+            }
+          }
+
+      - name: Download matching x64dbg SDK
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_x64dbg.outputs.tag }}-sdk
+          path: .deps/pluginsdk
+
+      - name: Check out MinHook
+        uses: actions/checkout@v4
+        with:
+          repository: TsudaKageyu/minhook
+          ref: ${{ env.MINHOOK_REF }}
+          path: .deps/minhook
+          persist-credentials: false
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.msvc_arch }}
 
-      - name: Fetch build dependencies
-        shell: pwsh
-        run: |
-          git clone --depth 1 --branch "$env:X64DBG_REF" https://github.com/x64dbg/x64dbg.git "$env:RUNNER_TEMP\x64dbg"
-          git clone --depth 1 --branch "$env:MINHOOK_REF" https://github.com/TsudaKageyu/minhook.git "$env:RUNNER_TEMP\minhook"
-
       - name: Build MinHook
-        shell: pwsh
         run: |
-          cmake -S "$env:RUNNER_TEMP\minhook" -B "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -A "${{ matrix.cmake_arch }}" -DCMAKE_BUILD_TYPE="$env:BUILD_CONFIGURATION"
-          cmake --build "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" --config "$env:BUILD_CONFIGURATION"
-          
-      - name: Build X64DBG
-        run: |
-          "$env:X64DBG_REF\build.bat" x64
-          "$env:X64DBG_REF\build.bat" x32
-          "$env:X64DBG_REF\release.bat"
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $source = Join-Path $env:GITHUB_WORKSPACE '.deps\minhook'
+          $build = Join-Path $env:RUNNER_TEMP "minhook-build-$env:ARCHITECTURE"
+
+          cmake -S "$source" -B "$build" `
+            -G 'Visual Studio 17 2022' -A "$env:CMAKE_ARCH" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>DLL'
+          cmake --build "$build" --config "$env:BUILD_CONFIGURATION" --parallel
 
       - name: Build DLLs
-        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $output = Join-Path $env:GITHUB_WORKSPACE "dist"
-          $pluginTemplateRoot = Join-Path $env:X64DBG_REF "release"
-          $sdk = Join-Path $pluginTemplateRoot "pluginsdk"
-          $minhookInclude = Join-Path $env:RUNNER_TEMP "minhook\include"
-          $minhookLib = Get-ChildItem "$env:RUNNER_TEMP\minhook-build-$env:ARCHITECTURE" -Filter "minhook*.lib" -Recurse | Select-Object -First 1
-          if (-not $minhookLib) {
-            throw "MinHook library was not produced."
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $output = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $plugin = Join-Path $env:GITHUB_WORKSPACE $env:PLUGIN_DIRECTORY
+          $sdk = Join-Path $plugin 'pluginsdk'
+          # Resolve source pragmas such as "pluginsdk/x64dbg.lib" from the build directory.
+          New-Item -ItemType Directory -Force -Path $sdk | Out-Null
+          Copy-Item -Path "$env:GITHUB_WORKSPACE\.deps\pluginsdk\*" `
+            -Destination $sdk -Recurse -Force
+          $minhookInclude = Join-Path $env:GITHUB_WORKSPACE '.deps\minhook\include'
+          $minhookBuild = Join-Path $env:RUNNER_TEMP "minhook-build-$env:ARCHITECTURE"
+          $minhookLibs = @(
+            Get-ChildItem -LiteralPath "$minhookBuild\$env:BUILD_CONFIGURATION" `
+              -Filter 'minhook*.lib' -File -Recurse
+          )
+          if ($minhookLibs.Count -ne 1) {
+            throw "Expected one MinHook library; found $($minhookLibs.Count)."
           }
 
-          New-Item -ItemType Directory -Force $output | Out-Null
-          Push-Location "$env:GITHUB_WORKSPACE\$env:PLUGIN_DIRECTORY"
-          rc /nologo /fo "$output\$env:PLUGIN_RESOURCE.res" "$env:PLUGIN_RESOURCE.rc"
-          cl /nologo /LD /EHsc /std:c++14 /I "$pluginTemplateRoot" /I . `
-            /Fe:"$output\$env:PLUGIN_OUTPUT" plugin.cpp themidie.cpp `
-            "$output\$env:PLUGIN_RESOURCE.res" "$sdk\$env:PLUGIN_LIBRARY.lib" `
-            user32.lib shell32.lib comdlg32.lib
-          Pop-Location
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          if ($env:BUILD_CONFIGURATION -eq 'Debug') {
+            $compileFlags = @('/MDd', '/Od', '/Zi', '/D_DEBUG')
+            $pluginLinkFlags = @('/DEBUG', "/PDB:$output\Themidie-plugin.pdb")
+            $dllLinkFlags = @('/DEBUG', "/PDB:$output\Themidie.pdb")
+          } else {
+            $compileFlags = @('/MD', '/O2', '/DNDEBUG')
+            $pluginLinkFlags = @()
+            $dllLinkFlags = @()
+          }
+          $debuggerLib = Join-Path $sdk "$env:PLUGIN_LIBRARY.lib"
+          $bridgeLib = Join-Path $sdk "$($env:ARCHITECTURE)bridge.lib"
 
-          Push-Location "$env:GITHUB_WORKSPACE\Themidie_DLL"
-          cl /nologo /LD /EHsc /std:c++14 /I "$minhookInclude" `
-            /Fe:"$output\Themidie.dll" main.cpp "$($minhookLib.FullName)" `
-            user32.lib advapi32.lib ntdll.lib
-          Pop-Location
+          Push-Location $plugin
+          try {
+            rc /nologo /fo "$output\$env:PLUGIN_RESOURCE.res" "$env:PLUGIN_RESOURCE.rc"
+            cl /nologo /LD /EHsc /std:c++14 @compileFlags `
+              /I "$plugin" /I "$sdk" `
+              "/Fe:$output\$env:PLUGIN_OUTPUT" plugin.cpp themidie.cpp `
+              "$output\$env:PLUGIN_RESOURCE.res" "$debuggerLib" "$bridgeLib" `
+              user32.lib shell32.lib comdlg32.lib `
+              /link "/LIBPATH:$sdk" @pluginLinkFlags
+          } finally {
+            Pop-Location
+          }
+
+          Push-Location (Join-Path $env:GITHUB_WORKSPACE 'Themidie_DLL')
+          try {
+            cl /nologo /LD /EHsc /std:c++14 @compileFlags `
+              /I "$minhookInclude" "/Fe:$output\Themidie.dll" `
+              main.cpp "$($minhookLibs[0].FullName)" `
+              user32.lib advapi32.lib ntdll.lib /link @dllLinkFlags
+          } finally {
+            Pop-Location
+          }
+
+          foreach ($file in @('Themidie.dll', $env:PLUGIN_OUTPUT)) {
+            if (-not (Test-Path -LiteralPath "$output\$file" -PathType Leaf)) {
+              throw "Expected output was not produced: $file"
+            }
+          }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: themidie-${{ matrix.architecture }}-${{ env.BUILD_CONFIGURATION }}
-          path: dist/
+          path: |
+            dist/Themidie.dll
+            dist/${{ matrix.plugin_output }}
+            dist/*.pdb
           if-no-files-found: error
+          overwrite: true
 
       - name: Package release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME -replace '[<>:"/\\|?*\x00-\x1f]', '_'
           Compress-Archive `
-            -Path "dist\Themidie.dll", "dist\$env:PLUGIN_OUTPUT" `
-            -DestinationPath "dist\Themidie-${{ github.ref_name }}-${{ matrix.architecture }}.zip"
+            -LiteralPath 'dist\Themidie.dll', "dist\$env:PLUGIN_OUTPUT" `
+            -DestinationPath "dist\Themidie-$tag-$env:ARCHITECTURE.zip" `
+            -Force
 
       - name: Upload release package
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: themidie-${{ github.ref_name }}-${{ matrix.architecture }}
-          path: dist/Themidie-${{ github.ref_name }}-${{ matrix.architecture }}.zip
+          name: themidie-release-${{ matrix.architecture }}
+          path: dist/Themidie-*.zip
           if-no-files-found: error
+          overwrite: true
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Publish Themidie release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download release package
+      - name: Download release packages
         uses: actions/download-artifact@v4
         with:
+          pattern: themidie-release-*
+          merge-multiple: true
           path: release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: release/**/*.zip
+          files: release/*.zip
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          make_latest: "true"
+
+  release_x64dbg:
+    name: Publish x64dbg snapshot
+    needs: build_x64dbg
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.event_name != 'pull_request_target' &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_x64dbg)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download this x64dbg build's release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_x64dbg.outputs.tag }}-release
+          path: x64dbg-release
+
+      - name: Create separate x64dbg snapshot release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build_x64dbg.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: x64dbg snapshot ${{ needs.build_x64dbg.outputs.version }}
+          body_path: x64dbg-release/release-notes.md
+          files: |
+            x64dbg-release/*.zip
+            x64dbg-release/*-build-info.json
+            x64dbg-release/*-SHA256SUMS.txt
+          prerelease: true
+          make_latest: "false"
+          generate_release_notes: false
+          fail_on_unmatched_files: true
